@@ -50,7 +50,7 @@ inputs:
     required: false
     default: ./coverage/lcov.info
   wait:
-    description: Number of minutes to wait for the Apex test run to complete.
+    description: Number of minutes to wait for the Apex and Flow test runs to complete.
     required: false
     default: '33'
   api-version:
@@ -118,8 +118,9 @@ runs:
           [[ -n "$TARGET_ORG" ]] && apex_args+=(--target-org "$TARGET_ORG")
           [[ -n "$API_VERSION" ]] && apex_args+=(--api-version "$API_VERSION")
 
-          apex_result=$(sf apex run test "${apex_args[@]}" --json)
-          code=$?
+          # `&& code=0 || code=$?` keeps the real exit code without letting the
+          # inherited `set -e` kill the script when the test run reports failures.
+          apex_result=$(sf apex run test "${apex_args[@]}" --json) && code=0 || code=$?
           echo "$apex_result" | jq '.result.summary // .'
 
           summary=$(echo "$apex_result" | jq '.result.summary // {}')
@@ -139,8 +140,7 @@ runs:
         # ----------------------------- LWC tests ------------------------------
         if [[ "$LWC" == "true" ]]; then
           echo "▶️ Running LWC (Jest) tests..."
-          bash -c "$LWC_TEST_COMMAND"
-          code=$?
+          bash -c "$LWC_TEST_COMMAND" && code=0 || code=$?
 
           # Derive overall line coverage from the lcov report (sum of hit/found lines).
           if [[ -f "$LWC_LCOV_PATH" ]]; then
@@ -160,24 +160,49 @@ runs:
         # ----------------------------- Flow tests -----------------------------
         if [[ "$FLOW" == "true" ]]; then
           echo "▶️ Running Flow tests ($TEST_LEVEL)..."
-          flow_args=(--test-level "$TEST_LEVEL" --output-dir "$FLOW_OUTPUT_DIR")
-          [[ "$CODE_COVERAGE" == "true" ]] && flow_args+=(--code-coverage)
-          [[ -n "$TARGET_ORG" ]] && flow_args+=(--target-org "$TARGET_ORG")
-          [[ -n "$API_VERSION" ]] && flow_args+=(--api-version "$API_VERSION")
 
-          flow_result=$(sf flow run test "${flow_args[@]}" --json)
-          code=$?
-          echo "$flow_result" | jq '.result.summary // .'
+          # `sf flow run test` has no --wait flag; with --json it returns
+          # immediately with only a testRunId (the run stays asynchronous).
+          # Coverage/output-dir belong on `flow get test`, not `flow run test`.
+          # So: kick off the run, then poll `flow get test` until it finishes.
+          run_args=(--test-level "$TEST_LEVEL")
+          [[ -n "$TARGET_ORG" ]] && run_args+=(--target-org "$TARGET_ORG")
+          [[ -n "$API_VERSION" ]] && run_args+=(--api-version "$API_VERSION")
 
-          summary=$(echo "$flow_result" | jq '.result.summary // {}')
-          flow_outcome=$(echo "$summary" | jq -r '.outcome // empty')
-          flow_coverage=$(echo "$summary" | jq -r '.testRunCoverage // empty')
+          run_json=$(sf flow run test "${run_args[@]}" --json) || true
+          test_run_id=$(echo "$run_json" | jq -r '.result.testRunId // empty')
 
-          if [[ $code -eq 0 ]]; then
-            echo "✅ Flow tests passed (coverage: ${flow_coverage:-n/a})"
+          if [[ -z "$test_run_id" ]]; then
+            echo "❌ Could not start Flow test run"
+            echo "$run_json" | jq '.'
+            overall_exit=1
           else
-            echo "❌ Flow tests failed"
-            overall_exit=$code
+            get_args=(--test-run-id "$test_run_id" --output-dir "$FLOW_OUTPUT_DIR")
+            [[ "$CODE_COVERAGE" == "true" ]] && get_args+=(--code-coverage)
+            [[ -n "$TARGET_ORG" ]] && get_args+=(--target-org "$TARGET_ORG")
+
+            # Poll until the async run finishes (bounded by the `wait` input, in minutes).
+            deadline=$(( SECONDS + WAIT * 60 ))
+            flow_result=""
+            while :; do
+              flow_result=$(sf flow get test "${get_args[@]}" --json) || true
+              flow_outcome=$(echo "$flow_result" | jq -r '.result.summary.outcome // empty')
+              [[ -n "$flow_outcome" && "$flow_outcome" != "InProgress" ]] && break
+              [[ $SECONDS -ge $deadline ]] && break
+              sleep 15
+            done
+
+            echo "$flow_result" | jq '.result.summary // .'
+            summary=$(echo "$flow_result" | jq '.result.summary // {}')
+            flow_outcome=$(echo "$summary" | jq -r '.outcome // empty')
+            flow_coverage=$(echo "$summary" | jq -r '.testRunCoverage // empty')
+
+            if [[ "$flow_outcome" == "Passed" ]]; then
+              echo "✅ Flow tests passed (coverage: ${flow_coverage:-n/a})"
+            else
+              echo "❌ Flow tests failed"
+              overall_exit=1
+            fi
           fi
         fi
 
