@@ -170,6 +170,10 @@ runs:
           [[ -n "$API_VERSION" ]] && run_args+=(--api-version "$API_VERSION")
 
           run_json=$(sf flow run test "${run_args[@]}" --json) || true
+          # The flow plugin is JIT-installed on first use; its
+          # "Installing plugin flow@x…" banner is printed on stdout and would
+          # corrupt the JSON. Keep only the JSON object (from the first "{").
+          run_json=${run_json#"${run_json%%\{*}"}
           test_run_id=$(echo "$run_json" | jq -r '.result.testRunId // empty')
 
           if [[ -z "$test_run_id" ]]; then
@@ -186,6 +190,7 @@ runs:
             flow_result=""
             while :; do
               flow_result=$(sf flow get test "${get_args[@]}" --json) || true
+              flow_result=${flow_result#"${flow_result%%\{*}"}
               flow_outcome=$(echo "$flow_result" | jq -r '.result.summary.outcome // empty')
               [[ -n "$flow_outcome" && "$flow_outcome" != "InProgress" ]] && break
               [[ $SECONDS -ge $deadline ]] && break
