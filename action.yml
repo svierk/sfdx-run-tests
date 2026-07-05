@@ -106,6 +106,31 @@ runs:
 
         overall_exit=0
 
+        # Extract the JSON object from CLI output that may be prefixed with
+        # npm/plugin JIT-install noise (some of which contains "{"). Keeps
+        # everything from the first line that starts with "{".
+        extract_json() { awk '/^[[:space:]]*\{/{f=1} f'; }
+
+        # Make sure the flow plugin (used to run Flow tests) is available. It is
+        # a JIT plugin whose first-use install dumps npm warnings onto stdout;
+        # installing it up front keeps that noise out of the captured JSON. If a
+        # previous step already installed it, the check skips reinstalling. The
+        # install output is captured and only surfaced on failure to keep the
+        # log clean. `flow` also appears under "Uninstalled JIT Plugins:", so
+        # only the installed section (above that header) is inspected.
+        ensure_flow() {
+          if sf plugins 2>/dev/null | sed '/Uninstalled JIT Plugins:/,$d' | grep -q '^flow '; then
+            return 0
+          fi
+          echo "Installing flow plugin..."
+          local log
+          if ! log="$(sf plugins install flow 2>&1)"; then
+            echo "$log"
+            echo "::error::Failed to install the flow plugin."
+            return 1
+          fi
+        }
+
         apex_outcome=""; apex_coverage=""; apex_passing=""; apex_failing=""
         lwc_outcome=""; lwc_coverage=""
         flow_outcome=""; flow_coverage=""
@@ -161,52 +186,55 @@ runs:
         if [[ "$FLOW" == "true" ]]; then
           echo "▶️ Running Flow tests ($TEST_LEVEL)..."
 
-          # `sf flow run test` has no --wait flag; with --json it returns
-          # immediately with only a testRunId (the run stays asynchronous).
-          # Coverage/output-dir belong on `flow get test`, not `flow run test`.
-          # So: kick off the run, then poll `flow get test` until it finishes.
-          run_args=(--test-level "$TEST_LEVEL")
-          [[ -n "$TARGET_ORG" ]] && run_args+=(--target-org "$TARGET_ORG")
-          [[ -n "$API_VERSION" ]] && run_args+=(--api-version "$API_VERSION")
-
-          run_json=$(sf flow run test "${run_args[@]}" --json) || true
-          # The flow plugin is JIT-installed on first use; its
-          # "Installing plugin flow@x…" banner is printed on stdout and would
-          # corrupt the JSON. Keep only the JSON object (from the first "{").
-          run_json=${run_json#"${run_json%%\{*}"}
-          test_run_id=$(echo "$run_json" | jq -r '.result.testRunId // empty')
-
-          if [[ -z "$test_run_id" ]]; then
-            echo "❌ Could not start Flow test run"
-            echo "$run_json" | jq '.'
+          # Ensure the flow plugin is present before capturing any --json output
+          # (its JIT install would otherwise leak npm noise onto stdout).
+          if ! ensure_flow; then
             overall_exit=1
           else
-            get_args=(--test-run-id "$test_run_id" --output-dir "$FLOW_OUTPUT_DIR")
-            [[ "$CODE_COVERAGE" == "true" ]] && get_args+=(--code-coverage)
-            [[ -n "$TARGET_ORG" ]] && get_args+=(--target-org "$TARGET_ORG")
+            # `sf flow run test` has no --wait flag; with --json it returns
+            # immediately with only a testRunId (the run stays asynchronous).
+            # Coverage/output-dir belong on `flow get test`, not `flow run test`.
+            # So: kick off the run, then poll `flow get test` until it finishes.
+            run_args=(--test-level "$TEST_LEVEL")
+            [[ -n "$TARGET_ORG" ]] && run_args+=(--target-org "$TARGET_ORG")
+            [[ -n "$API_VERSION" ]] && run_args+=(--api-version "$API_VERSION")
 
-            # Poll until the async run finishes (bounded by the `wait` input, in minutes).
-            deadline=$(( SECONDS + WAIT * 60 ))
-            flow_result=""
-            while :; do
-              flow_result=$(sf flow get test "${get_args[@]}" --json) || true
-              flow_result=${flow_result#"${flow_result%%\{*}"}
-              flow_outcome=$(echo "$flow_result" | jq -r '.result.summary.outcome // empty')
-              [[ -n "$flow_outcome" && "$flow_outcome" != "InProgress" ]] && break
-              [[ $SECONDS -ge $deadline ]] && break
-              sleep 15
-            done
+            run_json=$(sf flow run test "${run_args[@]}" --json) || true
+            run_json=$(printf '%s\n' "$run_json" | extract_json)
+            test_run_id=$(echo "$run_json" | jq -r '.result.testRunId // empty')
 
-            echo "$flow_result" | jq '.result.summary // .'
-            summary=$(echo "$flow_result" | jq '.result.summary // {}')
-            flow_outcome=$(echo "$summary" | jq -r '.outcome // empty')
-            flow_coverage=$(echo "$summary" | jq -r '.testRunCoverage // empty')
-
-            if [[ "$flow_outcome" == "Passed" ]]; then
-              echo "✅ Flow tests passed (coverage: ${flow_coverage:-n/a})"
-            else
-              echo "❌ Flow tests failed"
+            if [[ -z "$test_run_id" ]]; then
+              echo "❌ Could not start Flow test run"
+              echo "$run_json" | jq '.'
               overall_exit=1
+            else
+              get_args=(--test-run-id "$test_run_id" --output-dir "$FLOW_OUTPUT_DIR")
+              [[ "$CODE_COVERAGE" == "true" ]] && get_args+=(--code-coverage)
+              [[ -n "$TARGET_ORG" ]] && get_args+=(--target-org "$TARGET_ORG")
+
+              # Poll until the async run finishes (bounded by the `wait` input, in minutes).
+              deadline=$(( SECONDS + WAIT * 60 ))
+              flow_result=""
+              while :; do
+                flow_result=$(sf flow get test "${get_args[@]}" --json) || true
+                flow_result=$(printf '%s\n' "$flow_result" | extract_json)
+                flow_outcome=$(echo "$flow_result" | jq -r '.result.summary.outcome // empty')
+                [[ -n "$flow_outcome" && "$flow_outcome" != "InProgress" ]] && break
+                [[ $SECONDS -ge $deadline ]] && break
+                sleep 15
+              done
+
+              echo "$flow_result" | jq '.result.summary // .'
+              summary=$(echo "$flow_result" | jq '.result.summary // {}')
+              flow_outcome=$(echo "$summary" | jq -r '.outcome // empty')
+              flow_coverage=$(echo "$summary" | jq -r '.testRunCoverage // empty')
+
+              if [[ "$flow_outcome" == "Passed" ]]; then
+                echo "✅ Flow tests passed (coverage: ${flow_coverage:-n/a})"
+              else
+                echo "❌ Flow tests failed"
+                overall_exit=1
+              fi
             fi
           fi
         fi
