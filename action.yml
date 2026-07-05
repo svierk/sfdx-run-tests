@@ -104,12 +104,30 @@ runs:
       run: |
         set -uo pipefail
 
+        # We manage the exit status ourselves via `overall_exit`, so disable
+        # errexit (GitHub runs composite shells with `-e` by default). This
+        # guarantees that a failure in one test type still lets the remaining
+        # types run and the job summary render before we exit with the
+        # aggregated status.
+        set +e
+
         overall_exit=0
 
         # Extract the JSON object from CLI output that may be prefixed with
         # npm/plugin JIT-install noise (some of which contains "{"). Keeps
         # everything from the first line that starts with "{".
         extract_json() { awk '/^[[:space:]]*\{/{f=1} f'; }
+
+        # Map a test outcome to a status icon for the job summary. Anything other
+        # than a clean "Passed" (including an empty outcome from a run that never
+        # completed) is treated as not-passing.
+        outcome_icon() {
+          case "$1" in
+            Passed) printf '✅' ;;
+            Failed) printf '❌' ;;
+            *)      printf '⚠️' ;;
+          esac
+        }
 
         # Make sure the flow plugin (used to run Flow tests) is available. It is
         # a JIT plugin whose first-use install dumps npm warnings onto stdout;
@@ -143,8 +161,8 @@ runs:
           [[ -n "$TARGET_ORG" ]] && apex_args+=(--target-org "$TARGET_ORG")
           [[ -n "$API_VERSION" ]] && apex_args+=(--api-version "$API_VERSION")
 
-          # `&& code=0 || code=$?` keeps the real exit code without letting the
-          # inherited `set -e` kill the script when the test run reports failures.
+          # Capture the CLI exit code explicitly (non-zero means the run reported
+          # test failures) so we can record it and still continue to the summary.
           apex_result=$(sf apex run test "${apex_args[@]}" --json) && code=0 || code=$?
           echo "$apex_result" | jq '.result.summary // .'
 
@@ -251,20 +269,22 @@ runs:
 
         # ---------------------------- Step summary ----------------------------
         if [[ "$STEP_SUMMARY" == "true" ]]; then
+          # Heading reflects the overall result; each row reflects its own outcome.
+          [[ $overall_exit -eq 0 ]] && summary_icon="✅" || summary_icon="❌"
           {
             echo ""
-            echo "### 🧪 Test results"
+            echo "### ${summary_icon} Test results"
             echo ""
             echo "| Test type | Outcome | Coverage |"
             echo "| --- | --- | --- |"
             if [[ "$APEX" == "true" ]]; then
-              echo "| Apex | ${apex_outcome:-n/a} | ${apex_coverage:-n/a} |"
+              echo "| Apex | $(outcome_icon "$apex_outcome") ${apex_outcome:-n/a} | ${apex_coverage:-n/a} |"
             fi
             if [[ "$LWC" == "true" ]]; then
-              echo "| LWC (Jest) | ${lwc_outcome:-n/a} | ${lwc_coverage:-n/a} |"
+              echo "| LWC (Jest) | $(outcome_icon "$lwc_outcome") ${lwc_outcome:-n/a} | ${lwc_coverage:-n/a} |"
             fi
             if [[ "$FLOW" == "true" ]]; then
-              echo "| Flow | ${flow_outcome:-n/a} | ${flow_coverage:-n/a} |"
+              echo "| Flow | $(outcome_icon "$flow_outcome") ${flow_outcome:-n/a} | ${flow_coverage:-n/a} |"
             fi
             echo ""
           } >> "$GITHUB_STEP_SUMMARY"
