@@ -149,6 +149,57 @@ runs:
           fi
         }
 
+        # Render an `sf ... test --json` payload the way Jest reports its runs:
+        # a collapsible log group with one line per test plus a readable run
+        # summary. Any failures are repeated OUTSIDE the group (with message and
+        # stack trace) so they are visible without expanding anything.
+        # Usage: render_test_results "<label>" "<json>"
+        render_test_results() {
+          local label="$1" json="$2"
+
+          if ! echo "$json" | jq -e . >/dev/null 2>&1; then
+            echo "⚠️ ${label}: the CLI returned unexpected non-JSON output:"
+            echo "$json"
+            return 0
+          fi
+
+          echo "::group::${label} results"
+          echo "$json" | jq -r '
+            def name: .FullName // "\(.ApexClass.Name // "?").\(.MethodName // "?")";
+            (.result.tests // []) as $t
+            | (if ($t | length) == 0 then ["(no individual test results returned)"]
+               else [$t[]
+                     | if .Outcome == "Pass" then "✓ \(name) (\(.RunTime // 0) ms)"
+                       elif .Outcome == "Skip" then "○ \(name) (skipped)"
+                       else "✗ \(name) (\(.RunTime // 0) ms)"
+                       end]
+               end)
+            + ["",
+               (.result.summary // {}
+                | "Outcome:            \(.outcome // "-")",
+                  "Tests ran:          \(.testsRan // "-")",
+                  "Passing:            \(.passing // 0)",
+                  "Failing:            \(.failing // 0)",
+                  "Skipped:            \(.skipped // 0)",
+                  "Pass rate:          \(.passRate // "-")",
+                  "Run time:           \(.testExecutionTime // "-")",
+                  "Org-wide coverage:  \(.orgWideCoverage // "-")",
+                  "Test run coverage:  \(.testRunCoverage // "-")",
+                  "Test run ID:        \(.testRunId // "-")",
+                  "Org:                \(.hostname // "-")",
+                  "Username:           \(.username // "-")")]
+            | .[]'
+          echo "::endgroup::"
+
+          echo "$json" | jq -r '
+            def name: .FullName // "\(.ApexClass.Name // "?").\(.MethodName // "?")";
+            (.result.tests // [])
+            | map(select(.Outcome != "Pass" and .Outcome != "Skip"))
+            | .[]
+            | "❌ \(name): \((.Message // "Test failed") | gsub("\n"; " "))"
+              + (if (.StackTrace // "") != "" then "\n   \(.StackTrace | gsub("\n"; "\n   "))" else "" end)'
+        }
+
         apex_outcome=""; apex_coverage=""; apex_passing=""; apex_failing=""
         lwc_outcome=""; lwc_coverage=""
         flow_outcome=""; flow_coverage=""
@@ -164,9 +215,10 @@ runs:
           # Capture the CLI exit code explicitly (non-zero means the run reported
           # test failures) so we can record it and still continue to the summary.
           apex_result=$(sf apex run test "${apex_args[@]}" --json) && code=0 || code=$?
-          echo "$apex_result" | jq '.result.summary // .'
+          apex_result=$(printf '%s\n' "$apex_result" | extract_json)
+          render_test_results "Apex test" "$apex_result"
 
-          summary=$(echo "$apex_result" | jq '.result.summary // {}')
+          summary=$(echo "$apex_result" | jq '.result.summary // {}' 2>/dev/null)
           apex_outcome=$(echo "$summary" | jq -r '.outcome // empty')
           apex_passing=$(echo "$summary" | jq -r '.passing // empty')
           apex_failing=$(echo "$summary" | jq -r '.failing // empty')
@@ -183,7 +235,20 @@ runs:
         # ----------------------------- LWC tests ------------------------------
         if [[ "$LWC" == "true" ]]; then
           echo "▶️ Running LWC (Jest) tests..."
-          bash -c "$LWC_TEST_COMMAND" && code=0 || code=$?
+
+          # Capture the Jest output so it can be folded into a collapsible group
+          # on success; on failure it is printed unfolded so the failing tests
+          # are visible without expanding anything.
+          lwc_log="${RUNNER_TEMP:-/tmp}/sfdx-run-tests-lwc.log"
+          bash -c "$LWC_TEST_COMMAND" >"$lwc_log" 2>&1 && code=0 || code=$?
+
+          if [[ $code -eq 0 ]]; then
+            echo "::group::LWC (Jest) test results"
+            cat "$lwc_log"
+            echo "::endgroup::"
+          else
+            cat "$lwc_log"
+          fi
 
           # Derive overall line coverage from the lcov report (sum of hit/found lines).
           if [[ -f "$LWC_LCOV_PATH" ]]; then
@@ -242,8 +307,8 @@ runs:
                 sleep 15
               done
 
-              echo "$flow_result" | jq '.result.summary // .'
-              summary=$(echo "$flow_result" | jq '.result.summary // {}')
+              render_test_results "Flow test" "$flow_result"
+              summary=$(echo "$flow_result" | jq '.result.summary // {}' 2>/dev/null)
               flow_outcome=$(echo "$summary" | jq -r '.outcome // empty')
               flow_coverage=$(echo "$summary" | jq -r '.testRunCoverage // empty')
 

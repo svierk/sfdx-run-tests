@@ -56,6 +56,8 @@ jobs:
 
 > LWC tests run locally with Jest, so make sure the Node.js dependencies are installed first (e.g. `npm install`). Apex and Flow tests run against the authenticated org, so log in (and deploy the metadata) beforehand. When Flow tests are enabled, the required `@salesforce/plugin-flow` CLI plugin is installed automatically if it is not already present.
 
+In the workflow logs, each test run reports a human-readable result - one line per test plus a run summary - folded into a collapsible section, with a concise pass/fail line that stays visible. Test failures are always printed unfolded (including message and stack trace), so they can be inspected without expanding anything.
+
 ### Apex tests only (default)
 
 ```yaml
