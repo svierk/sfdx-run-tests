@@ -11,27 +11,32 @@ Apex tests are enabled by default (they are mandatory in Salesforce); LWC and Fl
 This streamlines the otherwise separate, manual test steps into one action and produces the coverage reports a subsequent SonarCloud scan consumes:
 
 ```yaml
+# Least-privilege token: this workflow only reads the repository.
+permissions:
+  contents: read
+
 jobs:
   validation:
     name: Validation
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.1
         with:
-          fetch-depth: 0
+          fetch-depth: 0 # required for the Sonar analysis
+          persist-credentials: false # the GITHUB_TOKEN is not needed after the checkout - don't leave it in .git/config
 
       - name: Select Node Version
-        uses: svierk/get-node-version@main
+        uses: svierk/get-node-version@v1.5.1
 
       - name: Install Dependencies
-        run: npm install --ignore-scripts
+        run: npm ci --ignore-scripts
 
       - name: Install SF CLI
-        uses: svierk/sfdx-cli-setup@main
+        uses: svierk/sfdx-cli-setup@v1.1.2
 
       - name: Salesforce Org Login
-        uses: svierk/sfdx-login@main
+        uses: svierk/sfdx-login@v1.4.2
         with:
           client-id: ${{ secrets.SFDX_CONSUMER_KEY }}
           jwt-secret-key: ${{ secrets.SFDX_JWT_SECRET_KEY }}
@@ -41,16 +46,15 @@ jobs:
         run: sf project deploy start
 
       - name: Run Tests
-        uses: svierk/sfdx-run-tests@main
+        uses: svierk/sfdx-run-tests@v1.1.0
         with:
           apex: true
           lwc: true
           flow: false
 
       - name: SonarCloud Scan
-        uses: SonarSource/sonarqube-scan-action@master
+        uses: SonarSource/sonarqube-scan-action@v8.2.1
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 ```
 
@@ -62,7 +66,7 @@ In the workflow logs, each test run reports a human-readable result - one line p
 
 ```yaml
       - name: Run Tests
-        uses: svierk/sfdx-run-tests@main
+        uses: svierk/sfdx-run-tests@v1.1.0
         with:
           target-org: ci
           test-level: RunLocalTests
@@ -114,6 +118,24 @@ Example `sonar-project.properties` snippet:
 sonar.javascript.lcov.reportPaths=./coverage/lcov.info
 sonar.apex.coverage.reportPath=./tests/apex/test-result-codecoverage.json
 ```
+
+> The scan step above only needs `SONAR_TOKEN` (plus `SONAR_HOST_URL` for a self-hosted SonarQube Server). A `GITHUB_TOKEN` is **not** required: pull request decoration is done by the SonarQube Cloud GitHub App, so handing the repository token to a third-party action would widen its access for no benefit.
+
+## 🔐 Security & versioning
+
+Every `uses:` reference in the snippets above is **pinned to an exact release version**, e.g. `svierk/sfdx-run-tests@v1.1.0`. Do the same in your own pipelines:
+
+- **Never reference a mutable ref** such as `@main` or `@v1`. It runs whatever code sits behind that branch/tag at run time - with access to your org credentials - so a compromised or rewritten ref would run unnoticed.
+- **Good - pin to an exact release tag** (`@v1.1.0`). Readable, concrete, and bumped through reviewed pull requests. This is what this repository itself uses.
+- **Strictest - pin to a full-length commit SHA** (`@a1b2c3d…`) with the version as a trailing comment. A SHA can never be re-pointed by the publisher; the cost is readability.
+- **Enable [Dependabot](https://docs.github.com/en/code-security/dependabot/working-with-dependabot/keeping-your-actions-up-to-date-with-dependabot) for `github-actions`** in the repository that holds your pipelines, so those pins are bumped for you instead of silently ageing.
+
+Beyond pinning, the same rules apply to workflows using this action:
+
+- **Least-privilege `GITHUB_TOKEN`** - declare a `permissions:` block granting only what the workflow needs (`contents: read` for a validation pipeline).
+- **`persist-credentials: false` on checkout** - the token is not written to `.git/config`, so later steps (SF CLI, third-party actions) cannot reuse it.
+- **Secrets travel as secrets** - pass them into an action input or expose them as **environment variables** in shell steps (`"$SONAR_TOKEN"`), never by interpolating `${{ secrets.* }}` into the script itself - that would allow command injection and can leak values into the log. This action follows the same rule internally: every input is handed to the composite script via `env:` and read as a shell variable.
+- **Validate pull requests with `pull_request`, never `pull_request_target`** - the latter runs with the base repository's secrets, which would let a fork execute its own code against your org.
 
 ## References
 
