@@ -27,16 +27,16 @@ jobs:
           persist-credentials: false # the GITHUB_TOKEN is not needed after the checkout - don't leave it in .git/config
 
       - name: Select Node Version
-        uses: svierk/get-node-version@v1.5.1
+        uses: svierk/get-node-version@v1.5.2
 
       - name: Install Dependencies
         run: npm ci --ignore-scripts
 
       - name: Install SF CLI
-        uses: svierk/sfdx-cli-setup@v1.1.2
+        uses: svierk/sfdx-cli-setup@v1.2.0
 
       - name: Salesforce Org Login
-        uses: svierk/sfdx-login@v1.4.2
+        uses: svierk/sfdx-login@v1.4.3
         with:
           client-id: ${{ secrets.SFDX_CONSUMER_KEY }}
           jwt-secret-key: ${{ secrets.SFDX_JWT_SECRET_KEY }}
@@ -46,7 +46,7 @@ jobs:
         run: sf project deploy start
 
       - name: Run Tests
-        uses: svierk/sfdx-run-tests@v1.1.0
+        uses: svierk/sfdx-run-tests@v1.2.0
         with:
           apex: true
           lwc: true
@@ -66,11 +66,47 @@ In the workflow logs, each test run reports a human-readable result - one line p
 
 ```yaml
       - name: Run Tests
-        uses: svierk/sfdx-run-tests@v1.1.0
+        uses: svierk/sfdx-run-tests@v1.2.0
         with:
           target-org: ci
           test-level: RunLocalTests
 ```
+
+### Run specific tests (RunSpecifiedTests)
+
+To run only part of the tests, e.g. a fast smoke test on every push, select them via one of the selection inputs. They map 1:1 to the selection flags of the Salesforce CLI:
+
+| Test type | Input              | CLI flag        | Values                                         |
+| --------- | ------------------ | --------------- | ---------------------------------------------- |
+| Apex      | `apex-class-names` | `--class-names` | Test classes, all methods of each class run    |
+| Apex      | `apex-suite-names` | `--suite-names` | Test suites                                    |
+| Apex      | `apex-tests`       | `--tests`       | `Class` or `Class.method` (`ns.Class.method` for namespaced tests) |
+| Flow      | `flow-class-names` | `--class-names` | Flow API names, all flow tests of each flow run |
+| Flow      | `flow-tests`       | `--tests`       | Individual flow tests as `FlowName.TestName`   |
+
+All selection inputs accept a comma-separated string as well as a multi-line block, and the two notations can be mixed freely. A comma-separated string keeps short lists on a single line, a block stays readable once a list grows:
+
+```yaml
+      - name: Run Tests
+        uses: svierk/sfdx-run-tests@v1.2.0
+        with:
+          flow: true
+          apex-tests: | # multi-line block
+            AccountServiceTest
+            OpportunityServiceTest.testClosedWon
+            LeadConversionTest
+          flow-class-names: 'Create_Case,Update_Account' # comma-separated
+```
+
+Surrounding whitespace and blank lines are ignored, so `'Create_Case, Update_Account'` is read exactly like `'Create_Case,Update_Account'`.
+
+How the selection interacts with `test-level`:
+
+- A test type with a selection **always runs with `RunSpecifiedTests`**, so `test-level` does not need to be changed. This also allows mixing, e.g. a selection of Apex tests while the Flow tests keep running with `RunLocalTests`.
+- Setting `test-level: RunSpecifiedTests` without a selection for an enabled test type fails the step with a clear error before any test runs.
+- The CLI accepts only one kind of selection per test type, so set either `apex-class-names`, `apex-suite-names` or `apex-tests` (and either `flow-class-names` or `flow-tests`). Combining them fails the step up front as well.
+
+> With a selection, coverage only reflects the selected tests. Keep that in mind if a subsequent quality gate (e.g. Sonar) enforces a minimum coverage.
 
 ## Inputs
 
@@ -80,7 +116,12 @@ In the workflow logs, each test run reports a human-readable result - one line p
 | `lwc`              | no       | `false`                     | Run LWC (Jest) unit tests.                                                                     |
 | `flow`             | no       | `false`                     | Run Flow tests.                                                                                |
 | `target-org`       | no       |                             | Username or alias of the target org (Apex and Flow). Not required if the default org is set.   |
-| `test-level`       | no       | `RunLocalTests`             | Test level for Apex and Flow: `RunLocalTests`, `RunAllTestsInOrg` or `RunSpecifiedTests`.      |
+| `test-level`       | no       | `RunLocalTests`             | Test level for Apex and Flow: `RunLocalTests`, `RunAllTestsInOrg` or `RunSpecifiedTests`. A test type with a selection always runs with `RunSpecifiedTests` (see [Run specific tests](#run-specific-tests-runspecifiedtests)). |
+| `apex-class-names` | no       |                             | Apex test classes to run, comma-separated or multi-line.                                       |
+| `apex-suite-names` | no       |                             | Apex test suites to run, comma-separated or multi-line.                                        |
+| `apex-tests`       | no       |                             | Apex tests to run as `Class` or `Class.method`, comma-separated or multi-line.                 |
+| `flow-class-names` | no       |                             | Flows (API names) whose flow tests should run, comma-separated or multi-line.                  |
+| `flow-tests`       | no       |                             | Individual flow tests to run as `FlowName.TestName`, comma-separated or multi-line.            |
 | `code-coverage`    | no       | `true`                      | Collect code coverage for Apex and Flow tests.                                                 |
 | `apex-output-dir`  | no       | `./tests/apex`              | Directory for Apex result and coverage files (contains `test-result-codecoverage.json`).       |
 | `flow-output-dir`  | no       | `./tests/flow`              | Directory for Flow result and coverage files.                                                  |
@@ -101,7 +142,7 @@ In the workflow logs, each test run reports a human-readable result - one line p
 | `flow-outcome`  | Outcome of the Flow test run (`Passed`/`Failed`).       |
 | `flow-coverage` | Overall Flow code coverage.                             |
 
-Outputs for a test type that was not run are empty. The step fails if any enabled test type fails, while still writing the summary and outputs.
+Outputs for a test type that was not run are empty. The step fails if any enabled test type fails, while still writing the summary and outputs. An invalid test selection (see above) fails the step before any test runs.
 
 ## Coverage reporting (Sonar / Codecov)
 
@@ -123,10 +164,10 @@ sonar.apex.coverage.reportPath=./tests/apex/test-result-codecoverage.json
 
 ## 🔐 Security & versioning
 
-Every `uses:` reference in the snippets above is **pinned to an exact release version**, e.g. `svierk/sfdx-run-tests@v1.1.0`. Do the same in your own pipelines:
+Every `uses:` reference in the snippets above is **pinned to an exact release version**, e.g. `svierk/sfdx-run-tests@v1.2.0`. Do the same in your own pipelines:
 
 - **Never reference a mutable ref** such as `@main` or `@v1`. It runs whatever code sits behind that branch/tag at run time - with access to your org credentials - so a compromised or rewritten ref would run unnoticed.
-- **Good - pin to an exact release tag** (`@v1.1.0`). Readable, concrete, and bumped through reviewed pull requests. This is what this repository itself uses.
+- **Good - pin to an exact release tag** (`@v1.2.0`). Readable, concrete, and bumped through reviewed pull requests. This is what this repository itself uses.
 - **Strictest - pin to a full-length commit SHA** (`@a1b2c3d…`) with the version as a trailing comment. A SHA can never be re-pointed by the publisher; the cost is readability.
 - **Enable [Dependabot](https://docs.github.com/en/code-security/dependabot/working-with-dependabot/keeping-your-actions-up-to-date-with-dependabot) for `github-actions`** in the repository that holds your pipelines, so those pins are bumped for you instead of silently ageing.
 

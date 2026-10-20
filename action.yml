@@ -22,9 +22,38 @@ inputs:
     description: Username or alias of the target org (used for Apex and Flow tests). Not required if the default org is already set.
     required: false
   test-level:
-    description: 'Test level for Apex and Flow tests. Permissible values: RunLocalTests, RunAllTestsInOrg, RunSpecifiedTests.'
+    description: >
+      Test level for Apex and Flow tests. Permissible values: RunLocalTests, RunAllTestsInOrg, RunSpecifiedTests.
+      RunSpecifiedTests requires a test selection (see the apex-* and flow-* selection inputs). A test type with a
+      selection always runs with RunSpecifiedTests, so a selection can be combined with another level for the other type.
     required: false
     default: RunLocalTests
+  apex-class-names:
+    description: >
+      Apex test classes to run, as a comma-separated or multi-line list, e.g. "AccountServiceTest,LeadServiceTest".
+      Runs all test methods of the given classes. Only one of apex-class-names, apex-suite-names or apex-tests can be set.
+    required: false
+  apex-suite-names:
+    description: >
+      Apex test suites to run, as a comma-separated or multi-line list, e.g. "SmokeTests".
+      Only one of apex-class-names, apex-suite-names or apex-tests can be set.
+    required: false
+  apex-tests:
+    description: >
+      Apex tests to run, as a comma-separated or multi-line list of classes or Class.method names,
+      e.g. "AccountServiceTest.testCreate,LeadServiceTest". Use ns.Class.method for namespaced tests.
+      Only one of apex-class-names, apex-suite-names or apex-tests can be set.
+    required: false
+  flow-class-names:
+    description: >
+      Flows whose flow tests should run, as a comma-separated or multi-line list of flow API names, e.g. "Create_Case,Update_Account".
+      Only one of flow-class-names or flow-tests can be set.
+    required: false
+  flow-tests:
+    description: >
+      Individual flow tests to run, as a comma-separated or multi-line list of FlowName.TestName entries,
+      e.g. "Create_Case.Happy_Path". Only one of flow-class-names or flow-tests can be set.
+    required: false
   code-coverage:
     description: Collect code coverage for Apex and Flow tests.
     required: false
@@ -93,6 +122,11 @@ runs:
         FLOW: ${{ inputs.flow }}
         TARGET_ORG: ${{ inputs.target-org }}
         TEST_LEVEL: ${{ inputs.test-level }}
+        APEX_CLASS_NAMES: ${{ inputs.apex-class-names }}
+        APEX_SUITE_NAMES: ${{ inputs.apex-suite-names }}
+        APEX_TESTS: ${{ inputs.apex-tests }}
+        FLOW_CLASS_NAMES: ${{ inputs.flow-class-names }}
+        FLOW_TESTS: ${{ inputs.flow-tests }}
         CODE_COVERAGE: ${{ inputs.code-coverage }}
         APEX_OUTPUT_DIR: ${{ inputs.apex-output-dir }}
         FLOW_OUTPUT_DIR: ${{ inputs.flow-output-dir }}
@@ -117,6 +151,63 @@ runs:
         # npm/plugin JIT-install noise (some of which contains "{"). Keeps
         # everything from the first line that starts with "{".
         extract_json() { awk '/^[[:space:]]*\{/{f=1} f'; }
+
+        # Splits a comma- or newline-separated input into the global SPLIT array
+        # and trims the surrounding whitespace, so that both notations work:
+        #   apex-tests: 'AccountServiceTest,LeadServiceTest'
+        #   apex-tests: |
+        #     AccountServiceTest
+        #     LeadServiceTest
+        split_list() {
+          SPLIT=()
+          local raw item
+          raw="${1//,/$'\n'}"
+          while IFS= read -r item; do
+            item="${item#"${item%%[![:space:]]*}"}"
+            item="${item%"${item##*[![:space:]]}"}"
+            if [[ -n "$item" ]]; then
+              SPLIT+=("$item")
+            fi
+          done <<< "$raw"
+        }
+
+        # Builds the test selection of one test type from its list inputs: fills
+        # the global SELECTION array with one CLI flag per value and sets
+        # SELECTION_LEVEL to the test level to run with. A selection implies
+        # RunSpecifiedTests; without one, the `test-level` input applies.
+        # Returns 1 (after logging the reason) if more than one selection input
+        # is set - the CLI accepts only one kind - or if RunSpecifiedTests is
+        # requested without any selection.
+        # Usage: select_tests "<label>" "<input>" "<flag>" "<value>" [...]
+        select_tests() {
+          local label="$1" inputs="" used="" count=0 item
+          shift
+          SELECTION=()
+          SELECTION_LEVEL="$TEST_LEVEL"
+          while [[ $# -ge 3 ]]; do
+            inputs+="${inputs:+, }'$1'"
+            split_list "$3"
+            if [[ ${#SPLIT[@]} -gt 0 ]]; then
+              count=$(( count + 1 ))
+              used+="${used:+, }'$1'"
+              for item in "${SPLIT[@]}"; do
+                SELECTION+=("$2" "$item")
+              done
+            fi
+            shift 3
+          done
+
+          if [[ $count -gt 1 ]]; then
+            echo "::error::${label} test selection is ambiguous: ${used} are set, but only one of them can be used."
+            return 1
+          fi
+          if [[ $count -eq 1 ]]; then
+            SELECTION_LEVEL=RunSpecifiedTests
+          elif [[ "$TEST_LEVEL" == "RunSpecifiedTests" ]]; then
+            echo "::error::Test level RunSpecifiedTests needs a selection of the ${label} tests to run. Set one of ${inputs}."
+            return 1
+          fi
+        }
 
         # Map a test outcome to a status icon for the job summary. Anything other
         # than a clean "Passed" (including an empty outcome from a run that never
@@ -204,10 +295,40 @@ runs:
         lwc_outcome=""; lwc_coverage=""
         flow_outcome=""; flow_coverage=""
 
+        # --------------------------- Test selection ---------------------------
+        # Resolve the selection of every enabled test type up front, so that a
+        # misconfiguration fails fast instead of after a long Apex test run.
+        selection_ok=true
+        apex_selection=(); apex_level="$TEST_LEVEL"
+        flow_selection=(); flow_level="$TEST_LEVEL"
+        if [[ "$APEX" == "true" ]]; then
+          if select_tests "Apex" \
+            apex-class-names --class-names "$APEX_CLASS_NAMES" \
+            apex-suite-names --suite-names "$APEX_SUITE_NAMES" \
+            apex-tests --tests "$APEX_TESTS"; then
+            apex_selection=(${SELECTION[@]+"${SELECTION[@]}"})
+            apex_level="$SELECTION_LEVEL"
+          else
+            selection_ok=false
+          fi
+        fi
+        if [[ "$FLOW" == "true" ]]; then
+          if select_tests "Flow" \
+            flow-class-names --class-names "$FLOW_CLASS_NAMES" \
+            flow-tests --tests "$FLOW_TESTS"; then
+            flow_selection=(${SELECTION[@]+"${SELECTION[@]}"})
+            flow_level="$SELECTION_LEVEL"
+          else
+            selection_ok=false
+          fi
+        fi
+        [[ "$selection_ok" == "true" ]] || exit 1
+
         # ----------------------------- Apex tests -----------------------------
         if [[ "$APEX" == "true" ]]; then
-          echo "▶️ Running Apex tests ($TEST_LEVEL)..."
-          apex_args=(--test-level "$TEST_LEVEL" --output-dir "$APEX_OUTPUT_DIR" --wait "$WAIT")
+          echo "▶️ Running Apex tests ($apex_level)..."
+          apex_args=(--test-level "$apex_level" --output-dir "$APEX_OUTPUT_DIR" --wait "$WAIT")
+          apex_args+=(${apex_selection[@]+"${apex_selection[@]}"})
           [[ "$CODE_COVERAGE" == "true" ]] && apex_args+=(--code-coverage)
           [[ -n "$TARGET_ORG" ]] && apex_args+=(--target-org "$TARGET_ORG")
           [[ -n "$API_VERSION" ]] && apex_args+=(--api-version "$API_VERSION")
@@ -267,7 +388,7 @@ runs:
 
         # ----------------------------- Flow tests -----------------------------
         if [[ "$FLOW" == "true" ]]; then
-          echo "▶️ Running Flow tests ($TEST_LEVEL)..."
+          echo "▶️ Running Flow tests ($flow_level)..."
 
           # Ensure the flow plugin is present before capturing any --json output
           # (its JIT install would otherwise leak npm noise onto stdout).
@@ -278,7 +399,8 @@ runs:
             # immediately with only a testRunId (the run stays asynchronous).
             # Coverage/output-dir belong on `flow get test`, not `flow run test`.
             # So: kick off the run, then poll `flow get test` until it finishes.
-            run_args=(--test-level "$TEST_LEVEL")
+            run_args=(--test-level "$flow_level")
+            run_args+=(${flow_selection[@]+"${flow_selection[@]}"})
             [[ -n "$TARGET_ORG" ]] && run_args+=(--target-org "$TARGET_ORG")
             [[ -n "$API_VERSION" ]] && run_args+=(--api-version "$API_VERSION")
 
