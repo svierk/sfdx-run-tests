@@ -133,14 +133,14 @@ How the selection interacts with `test-level`:
 
 ## Outputs
 
-| Name            | Description                                             |
-| --------------- | ------------------------------------------------------- |
-| `apex-outcome`  | Outcome of the Apex test run (`Passed`/`Failed`).       |
-| `apex-coverage` | Overall Apex code coverage.                             |
-| `lwc-outcome`   | Outcome of the LWC test run (`Passed`/`Failed`).        |
-| `lwc-coverage`  | Overall LWC line coverage.                              |
-| `flow-outcome`  | Outcome of the Flow test run (`Passed`/`Failed`).       |
-| `flow-coverage` | Overall Flow code coverage.                             |
+| Name            | Description                                                                                    |
+| --------------- | ---------------------------------------------------------------------------------------------- |
+| `apex-outcome`  | Outcome of the Apex test run (`Passed`/`Failed`, or `Skipped` when the org has no Apex tests). |
+| `apex-coverage` | Overall Apex code coverage.                                                                    |
+| `lwc-outcome`   | Outcome of the LWC test run (`Passed`/`Failed`).                                               |
+| `lwc-coverage`  | Overall LWC line coverage.                                                                     |
+| `flow-outcome`  | Outcome of the Flow test run (`Passed`/`Failed`).                                              |
+| `flow-coverage` | Overall Flow code coverage.                                                                    |
 
 Outputs for a test type that was not run are empty. The step fails if any enabled test type fails, while still writing the summary and outputs. An invalid test selection (see above) fails the step before any test runs.
 

@@ -92,7 +92,7 @@ inputs:
 
 outputs:
   apex-outcome:
-    description: Outcome of the Apex test run ("Passed"/"Failed"), empty if not run.
+    description: Outcome of the Apex test run ("Passed"/"Failed", or "Skipped" when the org has no Apex tests to run), empty if not run.
     value: ${{ steps.tests.outputs.apex-outcome }}
   apex-coverage:
     description: Overall Apex code coverage, empty if not run.
@@ -345,8 +345,23 @@ runs:
           apex_failing=$(echo "$summary" | jq -r '.failing // empty')
           apex_coverage=$(echo "$summary" | jq -r '.testRunCoverage // empty')
 
+          # Without a test run summary the CLI failed before any test ran, and the
+          # reason is only in its error payload.
+          cli_error=""
+          if [[ $code -ne 0 && "$summary" == "{}" ]]; then
+            cli_error=$(echo "$apex_result" | jq -r '.message // empty' 2>/dev/null || true)
+          fi
+
           if [[ $code -eq 0 ]]; then
             echo "✅ Apex tests passed: ${apex_passing:-0} passing (coverage: ${apex_coverage:-n/a})"
+          elif [[ "$cli_error" == "There are no Apex tests to run in this org." && "$apex_level" != "RunSpecifiedTests" ]]; then
+            # An org without Apex tests has nothing to fail under a test level;
+            # an explicit selection that runs nothing still fails below.
+            echo "::notice::There are no Apex tests to run in this org - skipping the Apex tests."
+            apex_outcome="Skipped"
+          elif [[ -n "$cli_error" ]]; then
+            echo "::error::Apex tests could not run: $cli_error"
+            overall_exit=$code
           else
             echo "❌ Apex tests failed: ${apex_failing:-?} failing"
             overall_exit=$code
