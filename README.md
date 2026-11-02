@@ -46,7 +46,7 @@ jobs:
         run: sf project deploy start
 
       - name: Run Tests
-        uses: svierk/sfdx-run-tests@v1.2.0
+        uses: svierk/sfdx-run-tests@v1.4.0
         with:
           apex: true
           lwc: true
@@ -66,7 +66,7 @@ In the workflow logs, each test run reports a human-readable result - one line p
 
 ```yaml
       - name: Run Tests
-        uses: svierk/sfdx-run-tests@v1.2.0
+        uses: svierk/sfdx-run-tests@v1.4.0
         with:
           target-org: ci
           test-level: RunLocalTests
@@ -88,7 +88,7 @@ All selection inputs accept a comma-separated string as well as a multi-line blo
 
 ```yaml
       - name: Run Tests
-        uses: svierk/sfdx-run-tests@v1.2.0
+        uses: svierk/sfdx-run-tests@v1.4.0
         with:
           flow: true
           apex-tests: | # multi-line block
@@ -119,7 +119,7 @@ How the selection interacts with `test-level`:
           target-org: awesome-org
 ```
 
-The tests of the project are found by their metadata files (`AiEvaluationDefinition`, `AiTestingDefinition`), and a project without any is skipped. They have to be deployed and their agents active in the target org. Use `agent-tests` to run a selection by API name, which can also name tests that only exist in the org.
+The tests of the project are found by their metadata files (`AiEvaluationDefinition`, `AiTestingDefinition`), and a project without any is skipped. They have to be deployed and their agents active in the target org, which [SFDX Agent Deploy](https://github.com/svierk/sfdx-agent-deploy) takes care of. Use `agent-tests` to run a selection by API name, which can also name tests that only exist in the org.
 
 `sf agent test run` exits with `0` when expectations fail, so the action judges each test case by its results. Failed expectations, test cases ending with an error, runs without test cases and runs exceeding `wait` all fail the step. Agent tests consume Einstein Requests or Flex Credits and can change org data, so they are opt-in.
 
@@ -183,10 +183,10 @@ sonar.apex.coverage.reportPath=./tests/apex/test-result-codecoverage.json
 
 ## 🔐 Security & versioning
 
-Every `uses:` reference in the snippets above is **pinned to an exact release version**, e.g. `svierk/sfdx-run-tests@v1.2.0`. Do the same in your own pipelines:
+Every `uses:` reference in the snippets above is **pinned to an exact release version**, e.g. `svierk/sfdx-run-tests@v1.4.0`. Do the same in your own pipelines:
 
 - **Never reference a mutable ref** such as `@main` or `@v1`. It runs whatever code sits behind that branch/tag at run time - with access to your org credentials - so a compromised or rewritten ref would run unnoticed.
-- **Good - pin to an exact release tag** (`@v1.2.0`). Readable, concrete, and bumped through reviewed pull requests. This is what this repository itself uses.
+- **Good - pin to an exact release tag** (`@v1.4.0`). Readable, concrete, and bumped through reviewed pull requests. This is what this repository itself uses.
 - **Strictest - pin to a full-length commit SHA** (`@a1b2c3d…`) with the version as a trailing comment. A SHA can never be re-pointed by the publisher; the cost is readability.
 - **Enable [Dependabot](https://docs.github.com/en/code-security/dependabot/working-with-dependabot/keeping-your-actions-up-to-date-with-dependabot) for `github-actions`** in the repository that holds your pipelines, so those pins are bumped for you instead of silently ageing.
 
