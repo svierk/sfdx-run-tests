@@ -119,7 +119,7 @@ How the selection interacts with `test-level`:
           target-org: awesome-org
 ```
 
-The tests of the project are found by their metadata files (`AiEvaluationDefinition`, `AiTestingDefinition`), and a project without any is skipped. They have to be deployed and their agents active in the target org. Use `agent-tests` to run a selection by API name, which can also name tests that only exist in the org.
+The tests of the project are found by their metadata files (`AiEvaluationDefinition`, `AiTestingDefinition`), and a project without any is skipped. They have to be deployed and their agents active in the target org, which [SFDX Agent Deploy](https://github.com/svierk/sfdx-agent-deploy) takes care of. Use `agent-tests` to run a selection by API name, which can also name tests that only exist in the org.
 
 `sf agent test run` exits with `0` when expectations fail, so the action judges each test case by its results. Failed expectations, test cases ending with an error, runs without test cases and runs exceeding `wait` all fail the step. Agent tests consume Einstein Requests or Flex Credits and can change org data, so they are opt-in.
 
