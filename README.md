@@ -1,8 +1,8 @@
 # ✅ SFDX Run Tests
 
-This repository implements a unified GitHub composite action to run Salesforce **Apex**, **LWC (Jest)** and **Flow** tests from a single step. Each test type can be toggled on or off, coverage is highlighted in the CLI logs and the GitHub step summary, and the coverage reports are written to the paths expected by quality tools like **SonarQube/SonarCloud** or **Codecov**.
+This repository implements a unified GitHub composite action to run Salesforce **Apex**, **LWC (Jest)**, **Flow** and **Agentforce agent** tests from a single step. Each test type can be toggled on or off, coverage is highlighted in the CLI logs and the GitHub step summary, and the coverage reports are written to the paths expected by quality tools like **SonarQube/SonarCloud** or **Codecov**.
 
-Apex tests are enabled by default (they are mandatory in Salesforce); LWC and Flow tests are opt-in.
+Apex tests are enabled by default (they are mandatory in Salesforce); LWC, Flow and Agentforce agent tests are opt-in.
 
 ## Usage
 
@@ -108,6 +108,21 @@ How the selection interacts with `test-level`:
 
 > With a selection, coverage only reflects the selected tests. Keep that in mind if a subsequent quality gate (e.g. Sonar) enforces a minimum coverage.
 
+### Agentforce agent tests
+
+```yaml
+      - name: Run Agent Tests
+        uses: svierk/sfdx-run-tests@v1.4.0
+        with:
+          apex: false
+          agent: true
+          target-org: awesome-org
+```
+
+The tests of the project are found by their metadata files (`AiEvaluationDefinition`, `AiTestingDefinition`), and a project without any is skipped. They have to be deployed and their agents active in the target org. Use `agent-tests` to run a selection by API name, which can also name tests that only exist in the org.
+
+`sf agent test run` exits with `0` when expectations fail, so the action judges each test case by its results. Failed expectations, test cases ending with an error, runs without test cases and runs exceeding `wait` all fail the step. Agent tests consume Einstein Requests or Flex Credits and can change org data, so they are opt-in.
+
 ## Inputs
 
 | Name               | Required | Default                     | Description                                                                                   |
@@ -122,13 +137,16 @@ How the selection interacts with `test-level`:
 | `apex-tests`       | no       |                             | Apex tests to run as `Class` or `Class.method`, comma-separated or multi-line.                 |
 | `flow-class-names` | no       |                             | Flows (API names) whose flow tests should run, comma-separated or multi-line.                  |
 | `flow-tests`       | no       |                             | Individual flow tests to run as `FlowName.TestName`, comma-separated or multi-line.            |
+| `agent`            | no       | `false`                     | Run Agentforce agent tests. A project without any is skipped.                          |
+| `agent-tests`      | no       |                             | Agent tests to run instead of all tests of the project, comma-separated or multi-line. |
 | `code-coverage`    | no       | `true`                      | Collect code coverage for Apex and Flow tests.                                                 |
 | `apex-output-dir`  | no       | `./tests/apex`              | Directory for Apex result and coverage files (contains `test-result-codecoverage.json`).       |
 | `flow-output-dir`  | no       | `./tests/flow`              | Directory for Flow result and coverage files.                                                  |
+| `agent-output-dir` | no       | `./tests/agent`             | Directory for the agent test results, one JUnit file per test.                         |
 | `lwc-test-command` | no       | `npx sfdx-lwc-jest --coverage` | Command used to run the LWC Jest tests with coverage (must write an lcov report). Works on any SFDX project without a specific package.json script; override it to use your own, e.g. `npm run test:unit:coverage`. |
 | `lwc-lcov-path`    | no       | `./coverage/lcov.info`      | Path to the lcov report produced by the LWC tests, used to report overall coverage.            |
-| `wait`             | no       | `33`                        | Number of minutes to wait for the Apex and Flow test runs to complete.                         |
-| `api-version`      | no       |                             | Override the api version used for Apex and Flow test api requests, e.g. `59.0`.                |
+| `wait`             | no       | `33`                        | Number of minutes to wait for each Apex, Flow and agent test run to complete.                         |
+| `api-version`      | no       |                             | Override the api version used for Apex, Flow and agent test api requests, e.g. `68.0`.                |
 | `step-summary`     | no       | `true`                      | Write a result section to the GitHub Actions [job summary](https://docs.github.com/en/actions/using-workflows/workflow-commands-for-github-actions#adding-a-job-summary). Set to `false` to avoid collisions with a custom workflow summary. |
 
 ## Outputs
@@ -141,6 +159,7 @@ How the selection interacts with `test-level`:
 | `lwc-coverage`  | Overall LWC line coverage.                                                                     |
 | `flow-outcome`  | Outcome of the Flow test run (`Passed`/`Failed`).                                              |
 | `flow-coverage` | Overall Flow code coverage.                                                                    |
+| `agent-outcome` | Outcome of the agent test runs (`Passed`/`Failed`, or `Skipped` when the project has none).    |
 
 Outputs for a test type that was not run are empty. The step fails if any enabled test type fails, while still writing the summary and outputs. An invalid test selection (see above) fails the step before any test runs.
 
