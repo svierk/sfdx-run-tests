@@ -1,5 +1,5 @@
 name: SFDX Run Tests
-description: GitHub composite action to run Salesforce Apex, LWC and Flow tests with code coverage reporting.
+description: GitHub composite action to run Salesforce Apex, LWC, Flow and Agentforce agent tests with code coverage reporting.
 
 branding:
   icon: check-square
@@ -18,8 +18,16 @@ inputs:
     description: Run Flow tests.
     required: false
     default: 'false'
+  agent:
+    description: >
+      Run Agentforce agent tests. The tests of the project are found by their metadata files
+      (AiEvaluationDefinition, AiTestingDefinition); a project without any is skipped. They have to be
+      deployed and their agents active in the target org. Agent tests consume Einstein Requests or Flex
+      Credits and can change org data, so they are opt-in.
+    required: false
+    default: 'false'
   target-org:
-    description: Username or alias of the target org (used for Apex and Flow tests). Not required if the default org is already set.
+    description: Username or alias of the target org (used for Apex, Flow and agent tests). Not required if the default org is already set.
     required: false
   test-level:
     description: >
@@ -54,6 +62,11 @@ inputs:
       Individual flow tests to run, as a comma-separated or multi-line list of FlowName.TestName entries,
       e.g. "Create_Case.Happy_Path". Only one of flow-class-names or flow-tests can be set.
     required: false
+  agent-tests:
+    description: >
+      Agent tests to run instead of all tests of the project, as a comma-separated or multi-line list of API names,
+      e.g. "Service_Agent_Smoke,Service_Agent_Regression". Tests that only exist in the org can be named here as well.
+    required: false
   code-coverage:
     description: Collect code coverage for Apex and Flow tests.
     required: false
@@ -66,6 +79,10 @@ inputs:
     description: Directory for Flow test result and coverage files.
     required: false
     default: ./tests/flow
+  agent-output-dir:
+    description: Directory for the agent test results, one JUnit file per test.
+    required: false
+    default: ./tests/agent
   lwc-test-command:
     description: >
       Command used to run the LWC Jest tests with coverage (must write an lcov report).
@@ -79,11 +96,11 @@ inputs:
     required: false
     default: ./coverage/lcov.info
   wait:
-    description: Number of minutes to wait for the Apex and Flow test runs to complete.
+    description: Number of minutes to wait for each Apex, Flow and agent test run to complete.
     required: false
     default: '33'
   api-version:
-    description: Override the api version used for Apex and Flow test api requests, for example '59.0'.
+    description: Override the api version used for Apex, Flow and agent test api requests, for example '68.0'.
     required: false
   step-summary:
     description: Write a result section to the GitHub Actions job summary. Set to false to avoid collisions with a custom workflow summary.
@@ -109,6 +126,9 @@ outputs:
   flow-coverage:
     description: Overall Flow code coverage, empty if not run.
     value: ${{ steps.tests.outputs.flow-coverage }}
+  agent-outcome:
+    description: Outcome of the agent test runs ("Passed"/"Failed", or "Skipped" when the project has no agent tests), empty if not run.
+    value: ${{ steps.tests.outputs.agent-outcome }}
 
 runs:
   using: composite
@@ -120,6 +140,7 @@ runs:
         APEX: ${{ inputs.apex }}
         LWC: ${{ inputs.lwc }}
         FLOW: ${{ inputs.flow }}
+        AGENT: ${{ inputs.agent }}
         TARGET_ORG: ${{ inputs.target-org }}
         TEST_LEVEL: ${{ inputs.test-level }}
         APEX_CLASS_NAMES: ${{ inputs.apex-class-names }}
@@ -127,9 +148,11 @@ runs:
         APEX_TESTS: ${{ inputs.apex-tests }}
         FLOW_CLASS_NAMES: ${{ inputs.flow-class-names }}
         FLOW_TESTS: ${{ inputs.flow-tests }}
+        AGENT_TESTS: ${{ inputs.agent-tests }}
         CODE_COVERAGE: ${{ inputs.code-coverage }}
         APEX_OUTPUT_DIR: ${{ inputs.apex-output-dir }}
         FLOW_OUTPUT_DIR: ${{ inputs.flow-output-dir }}
+        AGENT_OUTPUT_DIR: ${{ inputs.agent-output-dir }}
         LWC_TEST_COMMAND: ${{ inputs.lwc-test-command }}
         LWC_LCOV_PATH: ${{ inputs.lwc-lcov-path }}
         WAIT: ${{ inputs.wait }}
@@ -294,6 +317,7 @@ runs:
         apex_outcome=""; apex_coverage=""; apex_passing=""; apex_failing=""
         lwc_outcome=""; lwc_coverage=""
         flow_outcome=""; flow_coverage=""
+        agent_outcome=""; agent_detail=""
 
         # --------------------------- Test selection ---------------------------
         # Resolve the selection of every enabled test type up front, so that a
@@ -459,6 +483,128 @@ runs:
           fi
         fi
 
+        # ----------------------------- Agent tests ----------------------------
+        if [[ "$AGENT" == "true" ]]; then
+          # Name and test runner of every test: the file type tells the runner, so
+          # the CLI doesn't have to look it up (and can't find a name ambiguous).
+          # A test named in `agent-tests` without a local file is left to the CLI.
+          agent_names=(); agent_runners=()
+          runner_of() {
+            local file
+            file="$(find . -type f -not -path '*/node_modules/*' \( -name "$1.aiEvaluationDefinition-meta.xml" -o -name "$1.aiTestingDefinition-meta.xml" \) | head -n1)"
+            case "$file" in
+              *.aiEvaluationDefinition-meta.xml) echo testing-center ;;
+              *.aiTestingDefinition-meta.xml) echo agentforce-studio ;;
+            esac
+          }
+          split_list "$AGENT_TESTS"
+          if [[ ${#SPLIT[@]} -gt 0 ]]; then
+            for name in "${SPLIT[@]}"; do
+              agent_names+=("$name")
+              agent_runners+=("$(runner_of "$name")")
+            done
+          else
+            while IFS= read -r file; do
+              [[ -n "$file" ]] || continue
+              name="$(basename "$file")"
+              agent_names+=("${name%%.*}")
+              case "$file" in
+                *.aiEvaluationDefinition-meta.xml) agent_runners+=(testing-center) ;;
+                *) agent_runners+=(agentforce-studio) ;;
+              esac
+            done < <(find . -type f -not -path '*/node_modules/*' \( -name '*.aiEvaluationDefinition-meta.xml' -o -name '*.aiTestingDefinition-meta.xml' \) | sort)
+          fi
+
+          if [[ ${#agent_names[@]} -eq 0 ]]; then
+            echo "::notice::There are no agent tests in this project - skipping the agent tests."
+            agent_outcome="Skipped"
+          else
+            agent_passed=0; agent_failed=0
+            for i in "${!agent_names[@]}"; do
+              name="${agent_names[$i]}"
+              runner="${agent_runners[$i]}"
+              echo "▶️ Running agent test $name..."
+              agent_args=(--api-name "$name" --wait "$WAIT" --result-format junit --output-dir "$AGENT_OUTPUT_DIR")
+              [[ -n "$runner" ]] && agent_args+=(--test-runner "$runner")
+              [[ -n "$TARGET_ORG" ]] && agent_args+=(--target-org "$TARGET_ORG")
+              [[ -n "$API_VERSION" ]] && agent_args+=(--api-version "$API_VERSION")
+
+              agent_result=$(sf agent test run "${agent_args[@]}" --json 2>/dev/null) && code=0 || code=$?
+              agent_result=$(printf '%s\n' "$agent_result" | extract_json)
+              run_status=$(echo "$agent_result" | jq -r '.result.status // empty' 2>/dev/null)
+
+              # A run that reached no result: the CLI failed before it finished, or
+              # --wait ran out. The latter exits with 0, the run goes on in the org.
+              if [[ "$run_status" != "COMPLETED" ]]; then
+                if [[ "$run_status" == "IN_PROGRESS" || "$run_status" == "NEW" ]]; then
+                  message="Still running after $WAIT minutes. Run ID: $(echo "$agent_result" | jq -r '.result.runId // "unknown"')"
+                else
+                  message=$(echo "$agent_result" | jq -r '.message // empty' 2>/dev/null)
+                fi
+                echo "::error::Agent test $name could not finish: ${message:-CLI exit code $code}"
+                agent_failed=$(( agent_failed + 1 ))
+                continue
+              fi
+
+              # The exit code can't tell whether a test passed: the CLI returns 0 for
+              # failed expectations and only reports errors of the run itself. So
+              # judge every test case by its results, the way the CLI's JUnit report
+              # does. A metric without a verdict, like the latency, has result null.
+              # Testing Center reports testResults, Agentforce Studio testScorerResults.
+              verdict=$(echo "$agent_result" | jq -c '
+                [(.result.testCases // []) | to_entries[] | .key as $i | .value
+                 | { name: "Test case \(.testNumber // ($i + 1))\(if .inputs.utterance? then ": \(.inputs.utterance)" else "" end)" } as $case
+                 | if has("testScorerResults") then
+                     $case + { failures: (
+                       if ((.testScorerResults // []) | length) == 0 then [{ name: "scorers", message: "No scorer results" }]
+                       else [.testScorerResults[]
+                             | .scorerName as $name | ((.scorerResponse | fromjson?) // {}) as $r
+                             | select((($r.status // "") | ascii_upcase) != "PASS")
+                             | { name: $name, expected: $r.expectedValue, actual: $r.actualValue, message: $r.reasoning }]
+                       end) }
+                   else
+                     (.status // "") as $status
+                     | $case + { failures: (
+                         [(.testResults // [])[] | select(.result == "FAILURE" or .status == "ERROR")
+                          | { name, expected: .expectedValue, actual: .actualValue, message: .errorMessage }]
+                         + (if $status != "COMPLETED" and (([.testResults[]? | select(.result == "FAILURE" or .status == "ERROR")] | length) == 0)
+                            then [{ name: "status", message: "Test case ended with status \($status)" }] else [] end)) }
+                   end]' 2>/dev/null)
+              [[ -n "$verdict" ]] || verdict="[]"
+
+              echo "::group::Agent test $name results"
+              echo "$verdict" | jq -r '.[] | if (.failures | length) == 0 then "✓ \(.name)" else "✗ \(.name)" end'
+              echo "::endgroup::"
+              echo "$verdict" | jq -r '
+                .[] | .name as $case | .failures[]
+                | "❌ \($case) - \(.name)"
+                  + (if (.expected // "") != "" then "\n   expected: \(.expected)" else "" end)
+                  + (if (.actual // "") != "" then "\n   actual:   \(.actual)" else "" end)
+                  + (if (.message // "") != "" then "\n   \(.message)" else "" end)'
+
+              total=$(echo "$verdict" | jq 'length')
+              failing=$(echo "$verdict" | jq '[.[] | select((.failures | length) > 0)] | length')
+              if [[ "$total" -gt 0 && "$failing" -eq 0 && $code -eq 0 ]]; then
+                echo "✅ Agent test $name passed: $total test case(s)"
+                agent_passed=$(( agent_passed + 1 ))
+              else
+                [[ "$total" -eq 0 ]] && echo "::error::Agent test $name returned no test cases."
+                echo "❌ Agent test $name failed: $failing of $total test case(s)"
+                agent_failed=$(( agent_failed + 1 ))
+              fi
+            done
+
+            agent_detail="$agent_passed of $(( agent_passed + agent_failed )) tests passed"
+            if [[ $agent_failed -eq 0 ]]; then
+              agent_outcome="Passed"
+            else
+              agent_outcome="Failed"
+              overall_exit=1
+            fi
+            echo "${agent_outcome}: ${agent_detail}"
+          fi
+        fi
+
         # ------------------------------- Outputs ------------------------------
         {
           echo "apex-outcome=${apex_outcome}"
@@ -467,6 +613,7 @@ runs:
           echo "lwc-coverage=${lwc_coverage}"
           echo "flow-outcome=${flow_outcome}"
           echo "flow-coverage=${flow_coverage}"
+          echo "agent-outcome=${agent_outcome}"
         } >> "$GITHUB_OUTPUT"
 
         # ---------------------------- Step summary ----------------------------
@@ -487,6 +634,9 @@ runs:
             fi
             if [[ "$FLOW" == "true" ]]; then
               echo "| Flow | $(outcome_icon "$flow_outcome") ${flow_outcome:-n/a} | ${flow_coverage:-n/a} |"
+            fi
+            if [[ "$AGENT" == "true" ]]; then
+              echo "| Agent | $(outcome_icon "$agent_outcome") ${agent_outcome:-n/a}${agent_detail:+ ($agent_detail)} | n/a |"
             fi
             echo ""
           } >> "$GITHUB_STEP_SUMMARY"
