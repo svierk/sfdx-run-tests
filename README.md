@@ -46,7 +46,7 @@ jobs:
         run: sf project deploy start
 
       - name: Run Tests
-        uses: svierk/sfdx-run-tests@v1.4.0
+        uses: svierk/sfdx-run-tests@v1.5.0
         with:
           apex: true
           lwc: true
@@ -81,7 +81,7 @@ The org rejects a `flow-class-names` selection as a whole if one of its flows ha
 
 ```yaml
       - name: Run Tests
-        uses: svierk/sfdx-run-tests@v1.4.0
+        uses: svierk/sfdx-run-tests@v1.5.0
         with:
           target-org: ci
           test-level: RunLocalTests
@@ -103,7 +103,7 @@ All selection inputs accept a comma-separated string as well as a multi-line blo
 
 ```yaml
       - name: Run Tests
-        uses: svierk/sfdx-run-tests@v1.4.0
+        uses: svierk/sfdx-run-tests@v1.5.0
         with:
           flow: true
           apex-tests: | # multi-line block
@@ -127,7 +127,7 @@ How the selection interacts with `test-level`:
 
 ```yaml
       - name: Run Agent Tests
-        uses: svierk/sfdx-run-tests@v1.4.0
+        uses: svierk/sfdx-run-tests@v1.5.0
         with:
           apex: false
           agent: true
@@ -198,10 +198,10 @@ sonar.apex.coverage.reportPath=./tests/apex/test-result-codecoverage.json
 
 ## 🔐 Security & versioning
 
-Every `uses:` reference in the snippets above is **pinned to an exact release version**, e.g. `svierk/sfdx-run-tests@v1.4.0`. Do the same in your own pipelines:
+Every `uses:` reference in the snippets above is **pinned to an exact release version**, e.g. `svierk/sfdx-run-tests@v1.5.0`. Do the same in your own pipelines:
 
 - **Never reference a mutable ref** such as `@main` or `@v1`. It runs whatever code sits behind that branch/tag at run time - with access to your org credentials - so a compromised or rewritten ref would run unnoticed.
-- **Good - pin to an exact release tag** (`@v1.4.0`). Readable, concrete, and bumped through reviewed pull requests. This is what this repository itself uses.
+- **Good - pin to an exact release tag** (`@v1.5.0`). Readable, concrete, and bumped through reviewed pull requests. This is what this repository itself uses.
 - **Strictest - pin to a full-length commit SHA** (`@a1b2c3d…`) with the version as a trailing comment. A SHA can never be re-pointed by the publisher; the cost is readability.
 - **Enable [Dependabot](https://docs.github.com/en/code-security/dependabot/working-with-dependabot/keeping-your-actions-up-to-date-with-dependabot) for `github-actions`** in the repository that holds your pipelines, so those pins are bumped for you instead of silently ageing.
 
