@@ -62,6 +62,19 @@ jobs:
 
 In the workflow logs, each test run reports a human-readable result - one line per test plus a run summary - folded into a collapsible section, with a concise pass/fail line that stays visible. Test failures are always printed unfolded (including message and stack trace), so they can be inspected without expanding anything.
 
+### Test types without any tests
+
+An enabled test type without any tests is skipped instead of failing the step: its outcome is `Skipped` and the log shows a notice. A missing test is told apart from a test run that can't start, e.g. because of the org or the CLI, which still fails the step with the CLI's error message.
+
+| Test type | Skipped when                                                                                         | Still fails                                         |
+| --------- | ---------------------------------------------------------------------------------------------------- | --------------------------------------------------- |
+| Apex      | The org has no Apex tests to run under `test-level`                                                  | A selection (`apex-*` inputs) that runs nothing     |
+| LWC       | Jest finds no test files (`No tests found, exiting with code 1`)                                     | -                                                   |
+| Flow      | The org has no flow tests to run, also for the flows in `flow-class-names` (logged as a warning)      | A selection of individual tests (`flow-tests`)      |
+| Agent     | The project has no agent test metadata files                                                         | A test named in `agent-tests` that the org doesn't have |
+
+Apex stays strict for a selection, as Salesforce requires Apex tests and coverage to deploy to production. A selection of individual flow or agent tests names tests that have to exist, so a typo isn't skipped silently either.
+
 ### Apex tests only (default)
 
 ```yaml
@@ -155,9 +168,9 @@ The tests of the project are found by their metadata files (`AiEvaluationDefinit
 | --------------- | ---------------------------------------------------------------------------------------------- |
 | `apex-outcome`  | Outcome of the Apex test run (`Passed`/`Failed`, or `Skipped` when the org has no Apex tests). |
 | `apex-coverage` | Overall Apex code coverage.                                                                    |
-| `lwc-outcome`   | Outcome of the LWC test run (`Passed`/`Failed`).                                               |
+| `lwc-outcome`   | Outcome of the LWC test run (`Passed`/`Failed`, or `Skipped` when the project has no Jest tests). |
 | `lwc-coverage`  | Overall LWC line coverage.                                                                     |
-| `flow-outcome`  | Outcome of the Flow test run (`Passed`/`Failed`).                                              |
+| `flow-outcome`  | Outcome of the Flow test run (`Passed`/`Failed`, or `Skipped` when there are no flow tests to run). |
 | `flow-coverage` | Overall Flow code coverage.                                                                    |
 | `agent-outcome` | Outcome of the agent test runs (`Passed`/`Failed`, or `Skipped` when the project has none).    |
 
