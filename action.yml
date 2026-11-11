@@ -55,7 +55,8 @@ inputs:
   flow-class-names:
     description: >
       Flows whose flow tests should run, as a comma-separated or multi-line list of flow API names, e.g. "Create_Case,Update_Account".
-      Only one of flow-class-names or flow-tests can be set.
+      Flows without a flow test in the project (*.flowtest-meta.xml) are left out with a warning; if none is left, the Flow tests
+      are skipped. Only one of flow-class-names or flow-tests can be set.
     required: false
   flow-tests:
     description: >
@@ -115,13 +116,13 @@ outputs:
     description: Overall Apex code coverage, empty if not run.
     value: ${{ steps.tests.outputs.apex-coverage }}
   lwc-outcome:
-    description: Outcome of the LWC test run ("Passed"/"Failed"), empty if not run.
+    description: Outcome of the LWC test run ("Passed"/"Failed", or "Skipped" when the project has no Jest tests), empty if not run.
     value: ${{ steps.tests.outputs.lwc-outcome }}
   lwc-coverage:
     description: Overall LWC line coverage, empty if not run.
     value: ${{ steps.tests.outputs.lwc-coverage }}
   flow-outcome:
-    description: Outcome of the Flow test run ("Passed"/"Failed"), empty if not run.
+    description: Outcome of the Flow test run ("Passed"/"Failed", or "Skipped" when there are no flow tests to run), empty if not run.
     value: ${{ steps.tests.outputs.flow-outcome }}
   flow-coverage:
     description: Overall Flow code coverage, empty if not run.
@@ -402,7 +403,15 @@ runs:
           lwc_log="${RUNNER_TEMP:-/tmp}/sfdx-run-tests-lwc.log"
           bash -c "$LWC_TEST_COMMAND" >"$lwc_log" 2>&1 && code=0 || code=$?
 
-          if [[ $code -eq 0 ]]; then
+          # Jest exits with 1 when it finds no test files at all (with 0 under
+          # --passWithNoTests) and says so with this line. A project without
+          # Jest tests has nothing to fail, so the LWC tests are skipped.
+          lwc_no_tests=false
+          if grep -q 'No tests found, exiting with code [01]' "$lwc_log"; then
+            lwc_no_tests=true
+          fi
+
+          if [[ $code -eq 0 || "$lwc_no_tests" == "true" ]]; then
             echo "::group::LWC (Jest) test results"
             cat "$lwc_log"
             echo "::endgroup::"
@@ -415,7 +424,10 @@ runs:
             lwc_coverage=$(awk -F: '/^LF:/{f+=$2} /^LH:/{h+=$2} END{ if (f>0) printf "%.1f%%", (h/f)*100 }' "$LWC_LCOV_PATH")
           fi
 
-          if [[ $code -eq 0 ]]; then
+          if [[ "$lwc_no_tests" == "true" ]]; then
+            echo "::notice::There are no LWC (Jest) tests in this project - skipping the LWC tests."
+            lwc_outcome="Skipped"; lwc_coverage=""
+          elif [[ $code -eq 0 ]]; then
             lwc_outcome="Passed"
             echo "✅ LWC tests passed (coverage: ${lwc_coverage:-n/a})"
           else
@@ -429,9 +441,38 @@ runs:
         if [[ "$FLOW" == "true" ]]; then
           echo "▶️ Running Flow tests ($flow_level)..."
 
+          # A flow without flow tests makes the org reject a flow-class-names
+          # selection as a whole ("Invalid ID or name"), so the tests of the
+          # other flows wouldn't run either. A flow doesn't need tests, so the
+          # selected flows without a flow test in the project - a
+          # *.flowtest-meta.xml naming the flow in <flowApiName> - are left out.
+          flow_skip=false
+          split_list "$FLOW_CLASS_NAMES"
+          if [[ ${#SPLIT[@]} -gt 0 ]]; then
+            tested_flows=$(find . -type f -not -path '*/node_modules/*' -name '*.flowtest-meta.xml' \
+              -exec sed -n 's:.*<flowApiName>[[:space:]]*\([^<[:space:]]*\)[[:space:]]*</flowApiName>.*:\1:p' {} + | sort -u)
+            flow_selection=(); untested=""
+            for name in "${SPLIT[@]}"; do
+              if grep -qixF -- "$name" <<< "$tested_flows"; then
+                flow_selection+=(--class-names "$name")
+              else
+                untested+="${untested:+, }$name"
+              fi
+            done
+            if [[ -n "$untested" ]]; then
+              echo "::warning::No flow tests in this project for ${untested} - leaving them out. Check the flow API names in 'flow-class-names' if they should have some."
+            fi
+            if [[ ${#flow_selection[@]} -eq 0 ]]; then
+              echo "::notice::None of the selected flows has flow tests - skipping the Flow tests."
+              flow_outcome="Skipped"; flow_skip=true
+            fi
+          fi
+
           # Ensure the flow plugin is present before capturing any --json output
           # (its JIT install would otherwise leak npm noise onto stdout).
-          if ! ensure_flow; then
+          if [[ "$flow_skip" == "true" ]]; then
+            :
+          elif ! ensure_flow; then
             overall_exit=1
           else
             # `sf flow run test` has no --wait flag; with --json it returns
@@ -443,14 +484,27 @@ runs:
             [[ -n "$TARGET_ORG" ]] && run_args+=(--target-org "$TARGET_ORG")
             [[ -n "$API_VERSION" ]] && run_args+=(--api-version "$API_VERSION")
 
-            run_json=$(sf flow run test "${run_args[@]}" --json) || true
-            run_json=$(printf '%s\n' "$run_json" | extract_json)
-            test_run_id=$(echo "$run_json" | jq -r '.result.testRunId // empty')
+            run_output=$(sf flow run test "${run_args[@]}" --json) || true
+            run_json=$(printf '%s\n' "$run_output" | extract_json)
+            test_run_id=$(echo "$run_json" | jq -r '.result.testRunId // empty' 2>/dev/null)
 
             if [[ -z "$test_run_id" ]]; then
-              echo "❌ Could not start Flow test run"
-              echo "$run_json" | jq '.'
-              overall_exit=1
+              # The run didn't start, and the reason is only in the CLI's error
+              # payload. Under a test level, the org answers "No tests found for
+              # category: flow" when it has no flow tests, which isn't a failure.
+              # A selection the org can't run fails: its flows have tests in the
+              # project, so these tests are missing in the org or misnamed.
+              cli_error=$(echo "$run_json" | jq -r '.message // empty' 2>/dev/null || true)
+              if [[ "$cli_error" == *"No tests found"* && "$flow_level" != "RunSpecifiedTests" ]]; then
+                echo "::notice::There are no Flow tests to run in this org - skipping the Flow tests."
+                flow_outcome="Skipped"
+              else
+                if [[ -z "$cli_error" ]]; then
+                  echo "$run_output"
+                fi
+                echo "::error::Flow tests could not run: ${cli_error:-the CLI returned no test run ID}"
+                overall_exit=1
+              fi
             else
               get_args=(--test-run-id "$test_run_id" --output-dir "$FLOW_OUTPUT_DIR")
               [[ "$CODE_COVERAGE" == "true" ]] && get_args+=(--code-coverage)

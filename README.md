@@ -62,6 +62,21 @@ jobs:
 
 In the workflow logs, each test run reports a human-readable result - one line per test plus a run summary - folded into a collapsible section, with a concise pass/fail line that stays visible. Test failures are always printed unfolded (including message and stack trace), so they can be inspected without expanding anything.
 
+### Test types without any tests
+
+An enabled test type without any tests is skipped instead of failing the step: its outcome is `Skipped` and the log shows a notice. A missing test is told apart from a test run that can't start, e.g. because of the org or the CLI, which still fails the step with the CLI's error message.
+
+| Test type | Skipped when                                                                                         | Still fails                                         |
+| --------- | ---------------------------------------------------------------------------------------------------- | --------------------------------------------------- |
+| Apex      | The org has no Apex tests to run under `test-level`                                                  | A selection (`apex-*` inputs) that runs nothing     |
+| LWC       | Jest finds no test files (`No tests found, exiting with code 1`)                                     | -                                                   |
+| Flow      | The org has no flow tests to run under `test-level`, or none of the flows in `flow-class-names` has a flow test in the project | A selection the org can't run, e.g. tests from `flow-tests` that don't exist |
+| Agent     | The project has no agent test metadata files                                                         | A test named in `agent-tests` that the org doesn't have |
+
+Apex stays strict for a selection, as Salesforce requires Apex tests and coverage to deploy to production. A selection of individual flow or agent tests names tests that have to exist, so a typo isn't skipped silently either.
+
+The org rejects a `flow-class-names` selection as a whole if one of its flows has no flow tests, so the tests of the other flows wouldn't run either. The action therefore leaves out the flows without a flow test in the project - a `*.flowtest-meta.xml` file naming the flow in `<flowApiName>` - with a warning, and runs the rest. Flow tests that only exist in the org can be run with `test-level` or `flow-tests`.
+
 ### Apex tests only (default)
 
 ```yaml
@@ -81,7 +96,7 @@ To run only part of the tests, e.g. a fast smoke test on every push, select them
 | Apex      | `apex-class-names` | `--class-names` | Test classes, all methods of each class run    |
 | Apex      | `apex-suite-names` | `--suite-names` | Test suites                                    |
 | Apex      | `apex-tests`       | `--tests`       | `Class` or `Class.method` (`ns.Class.method` for namespaced tests) |
-| Flow      | `flow-class-names` | `--class-names` | Flow API names, all flow tests of each flow run |
+| Flow      | `flow-class-names` | `--class-names` | Flow API names, all flow tests of each flow run; flows without a flow test in the project are left out |
 | Flow      | `flow-tests`       | `--tests`       | Individual flow tests as `FlowName.TestName`   |
 
 All selection inputs accept a comma-separated string as well as a multi-line block, and the two notations can be mixed freely. A comma-separated string keeps short lists on a single line, a block stays readable once a list grows:
@@ -135,7 +150,7 @@ The tests of the project are found by their metadata files (`AiEvaluationDefinit
 | `apex-class-names` | no       |                             | Apex test classes to run, comma-separated or multi-line.                                       |
 | `apex-suite-names` | no       |                             | Apex test suites to run, comma-separated or multi-line.                                        |
 | `apex-tests`       | no       |                             | Apex tests to run as `Class` or `Class.method`, comma-separated or multi-line.                 |
-| `flow-class-names` | no       |                             | Flows (API names) whose flow tests should run, comma-separated or multi-line.                  |
+| `flow-class-names` | no       |                             | Flows (API names) whose flow tests should run, comma-separated or multi-line. Flows without a flow test in the project are left out. |
 | `flow-tests`       | no       |                             | Individual flow tests to run as `FlowName.TestName`, comma-separated or multi-line.            |
 | `agent`            | no       | `false`                     | Run Agentforce agent tests. A project without any is skipped.                          |
 | `agent-tests`      | no       |                             | Agent tests to run instead of all tests of the project, comma-separated or multi-line. |
@@ -155,9 +170,9 @@ The tests of the project are found by their metadata files (`AiEvaluationDefinit
 | --------------- | ---------------------------------------------------------------------------------------------- |
 | `apex-outcome`  | Outcome of the Apex test run (`Passed`/`Failed`, or `Skipped` when the org has no Apex tests). |
 | `apex-coverage` | Overall Apex code coverage.                                                                    |
-| `lwc-outcome`   | Outcome of the LWC test run (`Passed`/`Failed`).                                               |
+| `lwc-outcome`   | Outcome of the LWC test run (`Passed`/`Failed`, or `Skipped` when the project has no Jest tests). |
 | `lwc-coverage`  | Overall LWC line coverage.                                                                     |
-| `flow-outcome`  | Outcome of the Flow test run (`Passed`/`Failed`).                                              |
+| `flow-outcome`  | Outcome of the Flow test run (`Passed`/`Failed`, or `Skipped` when there are no flow tests to run). |
 | `flow-coverage` | Overall Flow code coverage.                                                                    |
 | `agent-outcome` | Outcome of the agent test runs (`Passed`/`Failed`, or `Skipped` when the project has none).    |
 
